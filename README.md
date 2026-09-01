@@ -33,9 +33,11 @@ new
   Build · Muse Spark 1.2 Free** — `opencode/muse-spark-1.2-contributor-free`, a
   built-in `opencode` provider model, no extra host auth needed)
 - provisions a minimal per-VM OpenCode config at `/root/.config/opencode/opencode.json`
-  (`{"permission":"allow"}` plus workspace+systemPrompt) so the in-guest agent never
+  (`{"permission":"allow","references":{"slides":{"path":"/home/andres/Proyects/slides"},"infinite-agent":{"path":"/home/andres/Proyects/infinite-agent"}}}`) so the in-guest agent never
   shows permission prompts — mirrors `~/.config/opencode/opencode.json:permission=allow`
   on the host, without copying the host config wholesale or any credentials
+- copies `agent/slides.md`, `agent/infinite.md`, `skill/slides/SKILL.md` and `bin/*` (`ask-chatgpt.js`, `infinite-loop.sh`, etc.) from `~/.config/opencode` (or repo fallback) into the VM's `/root/.config/opencode` so `opencode agent list` inside the VM shows `slides` and `infinite` (verified `env77` `ls agent` `slides.md`/`infinite.md` and `opencode agent list` `slides`/`infinite` found)
+- the VM already sees `~/Proyects/slides` and `~/Proyects/infinite-agent` via the existing `BroadMounts` `/home/andres/Proyects` RW, so no data duplication
 - when OpenCode exits, destroys the VM, purges its rootfs/secrets, releases the VPN
   reservation, and removes the state record
 
@@ -134,6 +136,35 @@ Live acceptance (real VMs, `~/.local/bin/new` 9.2M, `opencode/muse-spark-1.2-con
 * **5 consecutive `new` (2026-08-30, env48-51,69):** each `STARTING` → `NETWORK` → `VPN: connecting` → `handshake OK` (or `handshake timeout` then retry) → `measuring` → `egress … collides` (when duplicate) → `CONNECTED country=co/ec public-ip=…` → `WORKSPACE` → `READY` → `opencode -m …` → `q` → `TEARDOWN` → `CLEAN` — all 5 PASS, no orphan `machinectl`/`rootfs`/`secrets`/`reservations`/`state`.
 * **2 parallel `new` (env59 `ec:32` + env61 `…`):** both `STARTING` concurrently, `CONNECT` with unique `public-ip` (`32` vs `…`), `new status` shows both, both `CLEAN` on exit — no duplicate egress, no state corruption (one run showed `env15` live `106` vs `state` `112` correctly handled by live check).
 
-## Why no Infinite
+## Agent Integration (Slides + Infinite)
 
-This project is intentionally **not** another Infinite: no `opencode run`, no `--continue`, no autonomous loops, no `supervisor`/`watchdog`, no Telegram/Brave, no host VPN mutation. It simply gives you a normal interactive `opencode` inside an isolated VM with its own VPN — infrastructure isolation only.
+`new` now provisions **Slides** and **Infinite** as primary agents inside the VM's OpenCode, reusing existing host implementations (no fork):
+
+* **Slides** (`/home/andres/Proyects/slides`, `opencode/agent/slides.md` `mode: primary` + `skill/slides/SKILL.md` 6 phases, `engine/template.html` 1280×720): `references.slides.path` via `BroadMounts` (already `RW`), `agent`/`skill` copied to `/root/.config/opencode` (0600), `node`+`chromium` via `/opt/opencode` bind — verified `env77` `opencode agent list` `slides` found.
+* **Infinite** (`/home/andres/Proyects/infinite-agent`, `agent/infinite.md` `mode: primary` + `bin/infinite-loop.sh` `ask-chatgpt.js` `infinite-browser.sh`): same `references.infinite-agent`, `agent/infinite.md` + `bin/*` copied to `/root/.config/opencode/bin` (0755), `~/Proyects` mount provides `~/Proyects/infinite-agent` and `~/Proyects/<project>` state, host `Brave-Infinite` `~/.config/BraveSoftware/Brave-Infinite` and `Xvfb :99` **host-only** (not copied; VM `infinite-loop.sh` will launch its own `Xvfb :99`/`Brave :9333` if needed, or degrade `Telegram` via `lg secrets` miss). No host `opencode.db` or `nordlynx` mutation.
+
+```
+                         HOST
+                          │
+                    ┌─────▼─────┐
+                    │    new    │
+                    └─────┬─────┘
+                          │
+                    isolated VM
+                          │
+             ┌────────────┴────────────┐
+             │                         │
+        WireGuard VPN            OpenCode 1.18.21
+        lgwg0 10.5.0.2/32    -m muse-spark-1.2-contributor-free
+        kill-switch inet lgkill  permission:allow  /home/andres/Proyects
+             │              ┌──────────┴──────────┐
+             │              │                     │
+        unique egress      Slides               Infinite
+        (api.ipify.org)  (engine/template.html) (infinite-loop.sh)
+```
+
+`HOST` (`lgbr0`, `nordvpn_token`), `VM` (`lgwg0`, `lgkill`, `rootfs`), `SHARED SOURCE` (`~/Proyects/slides`, `~/Proyects/infinite-agent`), `MOUNTED` (`BroadMounts` RW, `/opt/opencode` RO), `COPIED` (`agent/*.md`/`skill`/`opencode.json` `references`), `SERVICE` (`Xvfb :99`, `Brave :9333` host-only), `SECRET` (`lgwg0.conf` via `secretsDir` RO).
+
+## Why no Infinite (host)
+
+This project is intentionally **not** another Infinite host daemon: no `opencode run --continue` watchdog, no `supervisor`, no host `DONE/FAILED` machine, no `Telegram`/`Brave` host mutation. It simply gives you a normal interactive `opencode` (with `slides`+`infinite` agents available) inside an isolated VM with its own VPN — infrastructure isolation only, disposable.

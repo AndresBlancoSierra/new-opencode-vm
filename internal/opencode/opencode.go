@@ -51,11 +51,26 @@ Report what you changed.`, projectGuestPath, country)
 // The VM already gets its workspace via the positional project arg and its model
 // via -m, so the config stays minimal and valid. The previous SystemPrompt
 // is kept for reference but not rendered into the JSON.
+//
+// For Slides/Infinite integration, the VM also gets `references` for the shared
+// projects (via the existing BroadMounts /home/andres/Proyects) and the agent/
+// skill files are copied into the VM's /root/.config/opencode by ProvisionConfig.
 func ConfigJSON(projectGuestPath, country string) string {
 	_ = projectGuestPath
 	_ = country
 	return `{
-  "permission": "allow"
+  "$schema": "https://opencode.ai/config.json",
+  "permission": "allow",
+  "references": {
+    "slides": {
+      "path": "/home/andres/Proyects/slides",
+      "description": "Base de conocimiento, motor, plantillas y docs del agente slides (decks HTML profesionales)."
+    },
+    "infinite-agent": {
+      "path": "/home/andres/Proyects/infinite-agent",
+      "description": "Infinite primary agent (opencode run --continue, watchdog, Brave, Telegram)."
+    }
+  }
 }
 `
 }
@@ -64,6 +79,15 @@ func ConfigJSON(projectGuestPath, country string) string {
 // root/.config/opencode/opencode.json (the path OpenCode reads when launched as root
 // with HOME=/root). The per-VM copy keeps the NEW configuration isolated to this
 // project and avoids mounting/reusing the host OpenCode config wholesale.
+//
+// It also provisions the Slides and Infinite primary agents so they are available
+// inside the VM's OpenCode without forking their logic:
+//   - copies agent/slides.md, agent/infinite.md, skill/slides/SKILL.md from the
+//     host's ~/.config/opencode (or repo fallback) into the VM's
+//     /root/.config/opencode
+//   - copies bin/* (ask-chatgpt.js, infinite-loop.sh, etc.) if present
+//   - the VM already sees ~/Proyects/slides and ~/Proyects/infinite-agent via
+//     BroadMounts (/home/andres/Proyects RW), so no data duplication is needed
 func ProvisionConfig(rootfsDir, projectGuestPath, country string) error {
 	if rootfsDir == "" {
 		return fmt.Errorf("rootfs dir empty")
@@ -74,6 +98,63 @@ func ProvisionConfig(rootfsDir, projectGuestPath, country string) error {
 	}
 	if err := os.WriteFile(p, []byte(ConfigJSON(projectGuestPath, country)), 0o600); err != nil {
 		return fmt.Errorf("write opencode config: %w", err)
+	}
+	// Provision Slides + Infinite agent/skill files into the VM's /root/.config/opencode
+	// so `opencode agent list` inside the VM sees them. These are copies (not mounts)
+	// to keep the VM's HOME=/root isolated and to avoid writing to the host's config
+	// from inside the VM. Failures are non-fatal (e.g. host files missing).
+	hostHome, _ := os.UserHomeDir()
+	// Use andres's home explicitly for host files (the VM runs as root, but host files
+	// live at /home/andres/.config/opencode, not /root/.config/opencode).
+	if hostHome == "/root" {
+		hostHome = "/home/andres"
+	}
+	hostCfg := filepath.Join(hostHome, ".config", "opencode")
+	vmCfg := filepath.Join(rootfsDir, "root", ".config", "opencode")
+	for _, rel := range []string{
+		"agent/slides.md",
+		"agent/infinite.md",
+		"skill/slides/SKILL.md",
+	} {
+		src := filepath.Join(hostCfg, rel)
+		dst := filepath.Join(vmCfg, rel)
+		if _, err := os.Stat(src); err != nil {
+			// Fallback to repo source for slides (opencode/agent/slides.md)
+			if rel == "agent/slides.md" {
+				src = "/home/andres/Proyects/slides/opencode/agent/slides.md"
+			} else if rel == "skill/slides/SKILL.md" {
+				src = "/home/andres/Proyects/slides/opencode/skill/slides/SKILL.md"
+			} else if rel == "agent/infinite.md" {
+				src = "/home/andres/Proyects/infinite-agent/agent/infinite.md"
+			}
+		}
+		if _, err := os.Stat(src); err != nil {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			continue
+		}
+		if data, err := os.ReadFile(src); err == nil {
+			_ = os.WriteFile(dst, data, 0o600)
+		}
+	}
+	// Copy bin/* if present (ask-chatgpt.js, infinite-loop.sh, etc.) — also non-fatal
+	binSrc := filepath.Join(hostCfg, "bin")
+	binDst := filepath.Join(vmCfg, "bin")
+	if _, err := os.Stat(binSrc); err == nil {
+		_ = os.MkdirAll(binDst, 0o755)
+		if entries, err := os.ReadDir(binSrc); err == nil {
+			for _, e := range entries {
+				if e.IsDir() {
+					continue
+				}
+				src := filepath.Join(binSrc, e.Name())
+				dst := filepath.Join(binDst, e.Name())
+				if data, err := os.ReadFile(src); err == nil {
+					_ = os.WriteFile(dst, data, 0o755)
+				}
+			}
+		}
 	}
 	return nil
 }
