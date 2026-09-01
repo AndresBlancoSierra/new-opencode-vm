@@ -58,8 +58,13 @@ func main() {
 	if len(args) >= 1 {
 		switch args[0] {
 		case "new", "up":
+			// new [path] — optional workspace path (default: /home/andres/Proyects)
+			workspace := ""
+			if len(args) >= 2 {
+				workspace = args[1]
+			}
 			ensureRoot()
-			newAuto(context.Background())
+			newAuto(context.Background(), workspace)
 			return
 		case "status":
 			ensureRoot()
@@ -69,11 +74,23 @@ func main() {
 			usage()
 			return
 		}
+		// If first arg is not a known subcommand, treat it as workspace path for `new`
+		// e.g. `new /home/andres/Proyects/myproj` (when binary is named `new` via argv0)
+		if !strings.HasPrefix(args[0], "-") {
+			ensureRoot()
+			newAuto(context.Background(), args[0])
+			return
+		}
 	}
 	// argv0 auto-mode: `new` (or `neww`) runs the automatic workflow, argc-free.
 	if base := filepath.Base(os.Args[0]); base == "new" || base == "neww" || base == "newlinux" {
 		ensureRoot()
-		newAuto(context.Background())
+		// In argv0 mode, any extra args are treated as workspace path
+		workspace := ""
+		if len(args) >= 1 && !strings.HasPrefix(args[0], "-") {
+			workspace = args[0]
+		}
+		newAuto(context.Background(), workspace)
 		return
 	}
 	usage()
@@ -82,9 +99,11 @@ func main() {
 
 func usage() {
 	fmt.Println("usage:")
-	fmt.Println("  new         (no args) create a fresh isolated VM + Colombia VPN + interactive OpenCode,")
-	fmt.Println("                      destroy the VM on OpenCode exit")
+	fmt.Println("  new [path]  create a fresh isolated VM + Colombia VPN + interactive OpenCode")
+	fmt.Println("              for the given workspace (default: /home/andres/Proyects),")
+	fmt.Println("              destroy the VM on OpenCode exit")
 	fmt.Println("  new status  (read-only) list currently running new-opencode-vm VMs with VPN/kill-switch/egress state")
+	fmt.Println("  new -h      show this help")
 }
 
 func loadConfig() *config.Config {
@@ -272,8 +291,25 @@ func verifyVMStopped(ctx context.Context, name string) bool {
 
 // newAuto is the primary workflow: create a fresh VM, connect a unique Colombia
 // VPN, launch interactive OpenCode, and destroy everything on exit.
-func newAuto(ctx context.Context) {
+// workspaceArg is an optional host path to use as the OpenCode workspace;
+// if empty, the default from config (~/Proyects) is used. This implements
+// Option A: the user explicitly tells `new` which folder to work in, instead
+// of auto-creating vm-* folders in ~/Proyects.
+func newAuto(ctx context.Context, workspaceArg string) {
 	c := loadConfig()
+	// Override workspace if user passed an explicit path (Option A)
+	if workspaceArg != "" {
+		// Resolve to absolute path and verify it exists (or its parent exists)
+		abs, err := filepath.Abs(workspaceArg)
+		if err == nil {
+			workspaceArg = abs
+		}
+		if _, err := os.Stat(workspaceArg); err != nil {
+			fmt.Fprintf(os.Stderr, "workspace %q not found: %v\n", workspaceArg, err)
+			os.Exit(1)
+		}
+		c.Workspace = workspaceArg
+	}
 	st, err := state.New(expand(statePath))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "state:", err)
@@ -305,13 +341,27 @@ func newAuto(ctx context.Context) {
 		os.Exit(1)
 	}
 
+	// Build mounts: BroadMounts already covers /home/andres + /home/andres/Proyects.
+	// If the user requested a workspace outside those (e.g. /tmp/myproj), add it explicitly.
+	projects := c.BroadMounts()
+	wsPath := c.WorkspacePath()
+	workspaceUnderBroad := false
+	for _, p := range projects {
+		if strings.HasPrefix(wsPath, p.HostPath) {
+			workspaceUnderBroad = true
+			break
+		}
+	}
+	if !workspaceUnderBroad {
+		projects = append(projects, backend.ProjectMount{HostPath: wsPath, GuestPath: wsPath, ReadOnly: false})
+	}
 	spec := backend.EnvSpec{
 		Name:             name,
 		Rootfs:           rootfsDir,
 		Bridge:           c.Bridge,
 		Gateway:          c.Gateway,
 		Subnet:           c.Subnet,
-		Projects:         c.BroadMounts(),
+		Projects:         projects,
 		CPUQuota:         c.DefaultCPUQuota,
 		MemMaxMB:         c.DefaultMemMaxMB,
 		PidsMax:          c.DefaultPidsMax,
@@ -319,7 +369,7 @@ func newAuto(ctx context.Context) {
 		EnableVPN:        true,
 		VPNIface:         "lgwg0",
 		OpenCode:         true,
-		OpenCodeProject:  c.WorkspacePath(),
+		OpenCodeProject:  wsPath,
 		OpenCodeExtraBin: c.OpenCodeBin,
 		OpenCodePrefix:   resolvedOpenCodePrefix(c.OpenCodeBin),
 		IP:               c.IPForInstance(id),

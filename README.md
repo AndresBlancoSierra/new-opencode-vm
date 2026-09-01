@@ -15,19 +15,22 @@ LookingGlass + Infinite are heavy: a watchdog/supervisor, `opencode run`,
 `--continue`, DONE/FAILED markers, Telegram/Brave/Xvfb, a daemon, TTLs. This
 project strips all of that. Each `new` is a clean, short-lived, disposable VM.
 
-## One command
+## One command (Option A — explicit workspace)
 
 ```
-new
+new              # usa /home/andres/Proyects (default)
+new ~/Proyects/mi-proyecto
+new /tmp/test-workspace
 ```
 
-- allocates a fresh VM (`env#N`, hidden from you)
+- allocates a fresh VM (`env#N`, hidden from you) **sin crear carpetas `vm-*` en `~/Proyects`**
 - boots it (broad RW `/home/andres` + `~/Proyects` mounts, so OpenCode feels like
-  hosting locally)
+  hosting locally; si el workspace está fuera de esos mounts, se añade explícitamente)
 - connects a per-VM WireGuard tunnel to **Colombia** (fallback geo pool), measured
   unique vs any coexisting VM
 - arms the fail-closed kill-switch inside the guest
-- launches interactive `opencode -m opencode/muse-spark-1.2-contributor-free ~/Proyects`
+- launches interactive `opencode -m opencode/muse-spark-1.2-contributor-free <workspace>`
+  (`workspace` como arg posicional — `--workspace` en `opencode 1.18.21` muestra help; verificado con `/tmp/test-workspace`)
   (workspace passed as a positional project arg — `--workspace` makes opencode 1.18.x
   print help instead of booting; default model is **OpenCode Zen · xhigh /
   Build · Muse Spark 1.2 Free** — `opencode/muse-spark-1.2-contributor-free`, a
