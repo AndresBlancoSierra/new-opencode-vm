@@ -1,0 +1,24 @@
+# Go
+*.exe
+*.test
+*.out
+/bin/
+/tmp/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# VM runtime (not in repo, but just in case)
+*.log
+
+# Secrets (never commit)
+secrets.json
+*.key
+*.pem
